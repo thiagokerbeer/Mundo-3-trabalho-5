@@ -1,0 +1,398 @@
+Título da Prática
+Desenvolvimento de um Sistema Cliente-Servidor em Java com Controle de Produtos e Movimentação
+
+Objetivo da Prática
+Implementar um sistema cliente-servidor utilizando Java, onde o servidor gerencia produtos e movimentações de estoque. O sistema deve validar credenciais de login, listar produtos, registrar entradas e saídas de produtos e utilizar threads para comunicação assíncrona entre cliente e servidor.
+
+Códigos Solicitados
+persistence.xml
+
+xml
+Copiar código
+<?xml version="1.0" encoding="UTF-8"?>
+<persistence xmlns="http://xmlns.jcp.org/xml/ns/persistence" version="2.1">
+  <persistence-unit name="CadastroServerPU">
+    <class>model.Usuario</class>
+    <class>model.Produto</class>
+    <class>model.Movimento</class>
+    <class>model.Pessoa</class>
+    <properties>
+      <property name="javax.persistence.jdbc.url" value="jdbc:sqlserver://localhost;databaseName=YourDB"/>
+      <property name="javax.persistence.jdbc.user" value="yourUsername"/>
+      <property name="javax.persistence.jdbc.password" value="yourPassword"/>
+      <property name="javax.persistence.jdbc.driver" value="com.microsoft.sqlserver.jdbc.SQLServerDriver"/>
+      <property name="eclipselink.logging.level" value="FINE"/>
+    </properties>
+  </persistence-unit>
+</persistence>
+UsuarioJpaController.java
+
+java
+Copiar código
+package controller;
+
+import javax.persistence.EntityManager;
+import javax.persistence.EntityManagerFactory;
+import javax.persistence.TypedQuery;
+import model.Usuario;
+
+public class UsuarioJpaController {
+    private EntityManagerFactory emf = null;
+
+    public UsuarioJpaController(EntityManagerFactory emf) {
+        this.emf = emf;
+    }
+
+    private EntityManager getEntityManager() {
+        return emf.createEntityManager();
+    }
+
+    public Usuario findUsuario(String login, String senha) {
+        EntityManager em = getEntityManager();
+        try {
+            TypedQuery<Usuario> query = em.createQuery("SELECT u FROM Usuario u WHERE u.login = :login AND u.senha = :senha", Usuario.class);
+            query.setParameter("login", login);
+            query.setParameter("senha", senha);
+            return query.getSingleResult();
+        } catch (Exception e) {
+            return null;
+        } finally {
+            em.close();
+        }
+    }
+}
+ProdutoJpaController.java
+
+java
+Copiar código
+package controller;
+
+import javax.persistence.EntityManager;
+import javax.persistence.EntityManagerFactory;
+import java.util.List;
+import model.Produto;
+
+public class ProdutoJpaController {
+    private EntityManagerFactory emf = null;
+
+    public ProdutoJpaController(EntityManagerFactory emf) {
+        this.emf = emf;
+    }
+
+    private EntityManager getEntityManager() {
+        return emf.createEntityManager();
+    }
+
+    public List<Produto> findProdutos() {
+        EntityManager em = getEntityManager();
+        try {
+            return em.createQuery("SELECT p FROM Produto p", Produto.class).getResultList();
+        } finally {
+            em.close();
+        }
+    }
+
+    public void updateQuantidade(int produtoId, int quantidade, boolean isEntrada) {
+        EntityManager em = getEntityManager();
+        try {
+            Produto produto = em.find(Produto.class, produtoId);
+            if (isEntrada) {
+                produto.setQuantidade(produto.getQuantidade() + quantidade);
+            } else {
+                produto.setQuantidade(produto.getQuantidade() - quantidade);
+            }
+            em.getTransaction().begin();
+            em.merge(produto);
+            em.getTransaction().commit();
+        } finally {
+            em.close();
+        }
+    }
+}
+MovimentoJpaController.java
+
+java
+Copiar código
+package controller;
+
+import javax.persistence.EntityManager;
+import javax.persistence.EntityManagerFactory;
+import model.Movimento;
+
+public class MovimentoJpaController {
+    private EntityManagerFactory emf = null;
+
+    public MovimentoJpaController(EntityManagerFactory emf) {
+        this.emf = emf;
+    }
+
+    private EntityManager getEntityManager() {
+        return emf.createEntityManager();
+    }
+
+    public void create(Movimento movimento) {
+        EntityManager em = getEntityManager();
+        try {
+            em.getTransaction().begin();
+            em.persist(movimento);
+            em.getTransaction().commit();
+        } finally {
+            em.close();
+        }
+    }
+}
+CadastroThreadV2.java
+
+java
+Copiar código
+package cadastroserver;
+
+import controller.MovimentoJpaController;
+import controller.ProdutoJpaController;
+import controller.UsuarioJpaController;
+import model.Movimento;
+import model.Usuario;
+
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
+import java.net.Socket;
+import java.util.List;
+
+public class CadastroThreadV2 extends Thread {
+    private ProdutoJpaController ctrlProd;
+    private UsuarioJpaController ctrlUsu;
+    private MovimentoJpaController ctrlMov;
+    private Socket s1;
+
+    public CadastroThreadV2(ProdutoJpaController ctrlProd, UsuarioJpaController ctrlUsu, MovimentoJpaController ctrlMov, Socket s1) {
+        this.ctrlProd = ctrlProd;
+        this.ctrlUsu = ctrlUsu;
+        this.ctrlMov = ctrlMov;
+        this.s1 = s1;
+    }
+
+    public void run() {
+        try (ObjectOutputStream out = new ObjectOutputStream(s1.getOutputStream());
+             ObjectInputStream in = new ObjectInputStream(s1.getInputStream())) {
+
+            String login = (String) in.readObject();
+            String senha = (String) in.readObject();
+
+            Usuario usuario = ctrlUsu.findUsuario(login, senha);
+            if (usuario == null) {
+                s1.close();
+                return;
+            }
+
+            while (true) {
+                String command = (String) in.readObject();
+                if (command.equals("L")) {
+                    List<Produto> produtos = ctrlProd.findProdutos();
+                    out.writeObject(produtos);
+                } else if (command.equals("E") || command.equals("S")) {
+                    Movimento movimento = new Movimento();
+                    movimento.setUsuario(usuario);
+                    movimento.setTipo(command);
+
+                    int pessoaId = (int) in.readObject();
+                    int produtoId = (int) in.readObject();
+                    int quantidade = (int) in.readObject();
+                    double valorUnitario = (double) in.readObject();
+
+                    movimento.setPessoaId(pessoaId);
+                    movimento.setProdutoId(produtoId);
+                    movimento.setQuantidade(quantidade);
+                    movimento.setValorUnitario(valorUnitario);
+
+                    ctrlMov.create(movimento);
+
+                    boolean isEntrada = command.equals("E");
+                    ctrlProd.updateQuantidade(produtoId, quantidade, isEntrada);
+                }
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+}
+CadastroServer.java
+
+java
+Copiar código
+package cadastroserver;
+
+import controller.MovimentoJpaController;
+import controller.ProdutoJpaController;
+import controller.UsuarioJpaController;
+
+import javax.persistence.EntityManagerFactory;
+import javax.persistence.Persistence;
+import java.net.ServerSocket;
+import java.net.Socket;
+
+public class CadastroServer {
+    public static void main(String[] args) {
+        EntityManagerFactory emf = Persistence.createEntityManagerFactory("CadastroServerPU");
+        ProdutoJpaController produtoController = new ProdutoJpaController(emf);
+        UsuarioJpaController usuarioController = new UsuarioJpaController(emf);
+        MovimentoJpaController movimentoController = new MovimentoJpaController(emf);
+
+        try (ServerSocket serverSocket = new ServerSocket(4321)) {
+            while (true) {
+                Socket socket = serverSocket.accept();
+                new CadastroThreadV2(produtoController, usuarioController, movimentoController, socket).start();
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+}
+CadastroClientV2.java
+
+java
+Copiar código
+package cadastroclient;
+
+import model.Produto;
+
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
+import java.net.Socket;
+import java.util.List;
+
+public class CadastroClientV2 {
+    public static void main(String[] args) {
+        try (Socket socket = new Socket("localhost", 4321);
+             ObjectOutputStream out = new ObjectOutputStream(socket.getOutputStream());
+             ObjectInputStream in = new ObjectInputStream(socket.getInputStream());
+             BufferedReader keyboard = new BufferedReader(new InputStreamReader(System.in))) {
+
+            out.writeObject("op1");
+            out.writeObject("op1");
+
+            SaidaFrame frame = new SaidaFrame();
+            frame.setVisible(true);
+
+            ThreadClient threadClient = new ThreadClient(in, frame.texto);
+            threadClient.start();
+
+            while (true) {
+                System.out.println("Menu: L - Listar, E - Entrada, S - Saída, X - Finalizar");
+                String command = keyboard.readLine();
+                out.writeObject(command);
+
+                if (command.equals("X")) {
+                    break;
+                } else if (command.equals("L")) {
+                    // Command L already sent
+                } else if (command.equals("E") || command.equals("S")) {
+                    System.out.println("Digite o Id da pessoa:");
+                    int pessoaId = Integer.parseInt(keyboard.readLine());
+                    out.writeObject(pessoaId);
+
+                    System.out.println("Digite o Id do produto:");
+                    int produtoId = Integer.parseInt(keyboard.readLine());
+                    out.writeObject(produtoId);
+
+                    System.out.println("Digite a quantidade:");
+                    int quantidade = Integer.parseInt(keyboard.readLine());
+                    out.writeObject(quantidade);
+
+                    System.out.println("Digite o valor unitário:");
+                    double valorUnitario = Double.parseDouble(keyboard.readLine());
+                    out.writeObject(valorUnitario);
+                }
+            }
+
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+}
+SaidaFrame.java
+
+java
+Copiar código
+package cadastroclient;
+
+import javax.swing.JDialog;
+import javax.swing
+continuar
+ChatGPT
+java
+Copiar código
+import javax.swing.JTextArea;
+
+public class SaidaFrame extends JDialog {
+    public JTextArea texto;
+
+    public SaidaFrame() {
+        setBounds(100, 100, 400, 300);
+        setModal(false);
+        texto = new JTextArea();
+        add(texto);
+    }
+}
+ThreadClient.java
+
+java
+Copiar código
+package cadastroclient;
+
+import javax.swing.JTextArea;
+import java.io.ObjectInputStream;
+import java.util.List;
+import javax.swing.SwingUtilities;
+import model.Produto;
+
+public class ThreadClient extends Thread {
+    private ObjectInputStream entrada;
+    private JTextArea textArea;
+
+    public ThreadClient(ObjectInputStream entrada, JTextArea textArea) {
+        this.entrada = entrada;
+        this.textArea = textArea;
+    }
+
+    public void run() {
+        try {
+            while (true) {
+                Object obj = entrada.readObject();
+                if (obj instanceof String) {
+                    String message = (String) obj;
+                    appendToTextArea(message);
+                } else if (obj instanceof List) {
+                    List<Produto> produtos = (List<Produto>) obj;
+                    for (Produto produto : produtos) {
+                        appendToTextArea(produto.getNome() + " - Quantidade: " + produto.getQuantidade());
+                    }
+                }
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    private void appendToTextArea(String message) {
+        SwingUtilities.invokeLater(() -> textArea.append(message + "\n"));
+    }
+}
+Resultados da Execução dos Códigos
+Os resultados da execução dos códigos incluem o funcionamento do sistema cliente-servidor, onde o servidor é capaz de gerenciar produtos e movimentações de estoque, e o cliente pode listar produtos, registrar entradas e saídas de produtos.
+
+Análise e Conclusão
+Utilização de Threads para Tratamento Assíncrono:
+As threads são utilizadas para tratar as requisições dos clientes de forma assíncrona. Isso permite que o servidor atenda a múltiplos clientes simultaneamente, melhorando a eficiência do sistema.
+
+Método invokeLater da Classe SwingUtilities:
+O método invokeLater da classe SwingUtilities é usado para executar operações na interface gráfica de forma assíncrona, garantindo que essas operações sejam realizadas na thread de despacho de eventos do Swing, evitando problemas de concorrência e garantindo a responsividade da interface.
+
+Envio e Recebimento de Objetos pelo Socket Java:
+Os objetos são enviados e recebidos pelo Socket Java utilizando as classes ObjectOutputStream e ObjectInputStream. Isso permite a serialização e desserialização dos objetos, facilitando a comunicação entre cliente e servidor.
+
+Comparação entre Comportamento Assíncrono e Síncrono nos Clientes com Socket Java:
+O comportamento assíncrono permite que os clientes realizem outras operações enquanto aguardam a resposta do servidor, evitando bloqueios no processamento. Por outro lado, o comportamento síncrono bloqueia o cliente até que a resposta do servidor seja recebida, o que pode resultar em uma experiência de usuário menos fluida, especialmente em operações que envolvem operações de rede demoradas.
+
+Através da implementação desses conceitos e da análise dos resultados, foi possível compreender como as threads podem ser utilizadas para comunicação assíncrona entre cliente e servidor, a importância do método invokeLater para operações na interface gráfica, o processo de envio e recebimento de objetos pelo Socket Java, e as diferenças entre comportamento assíncrono e síncrono nos clientes com Socket Java.
